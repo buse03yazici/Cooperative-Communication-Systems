@@ -46,8 +46,14 @@ def df(s):
     hsd, hsr, hrd = ray(NUM_BITS, VAR_SD), ray(NUM_BITS, VAR_SR), ray(NUM_BITS, VAR_RD)
     ysd = hsd*tx + wgn(NUM_BITS, s)
     ysr = hsr*tx + wgn(NUM_BITS, s)
-    yrd = hrd*mod(dem(np.conj(hsr)*ysr)) + wgn(NUM_BITS, s)
-    return ber(bits, dem(np.conj(hsd)*ysd + np.conj(hrd)*yrd))
+    # Selective DF: relay only forwards if instantaneous S→R SNR exceeds threshold
+    snr_sr_inst = np.abs(hsr)**2 * s          # instantaneous S→R SNR per bit
+    relay_active = snr_sr_inst > 1.0          # threshold = 1 (0 dB)
+    decoded_relay = mod(dem(np.conj(hsr)*ysr))
+    yrd = hrd * (relay_active * decoded_relay) + wgn(NUM_BITS, s)
+    # MRC: use relay branch only where relay was active
+    combined = np.conj(hsd)*ysd + relay_active * np.conj(hrd)*yrd
+    return ber(bits, dem(combined))
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 print("Simulating... (~60 seconds)")
@@ -57,7 +63,8 @@ print("Done.\n")
 
 # ── Diversity Order ───────────────────────────────────────────────────────────
 def div_order(b):
-    m = (SNR_DB >= 15) & (b > 1e-9)
+    m = (SNR_DB >= 15) & (b > 1e-6)
+    if m.sum() < 2: return float('nan')
     sl, _ = np.polyfit(SNR_DB[m], np.log10(b[m]), 1)
     return -sl * 10
 
@@ -110,7 +117,7 @@ plt.savefig('capacity_vs_snr.png', dpi=150)
 # ── Plot 3: Outage Probability ────────────────────────────────────────────────
 plt.figure(figsize=(10, 6))
 plt.semilogy(SNR_DB, outage_direct, 'r-o', lw=2, ms=5, label='Direct (theoretical)')
-plt.semilogy(SNR_DB, outage_coop,   'b-s', lw=2, ms=5, label='Cooperative AF (theoretical)')
+plt.semilogy(SNR_DB, outage_coop,   'b-s', lw=2, ms=5, label='Cooperative (diversity approx.)')
 plt.xlabel('SNR (dB)', fontsize=13); plt.ylabel('Outage Probability', fontsize=13)
 plt.title(f'Outage Probability vs SNR (γ_th = {GAMMA_TH:.0f} = 0 dB)', fontsize=13)
 plt.legend(fontsize=11); plt.grid(True, which='both', alpha=0.4)
