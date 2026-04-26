@@ -2,105 +2,84 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.special import erfc
 
-# ── Parameters ──────────────────────────────────────────────────────────────
+# ── Parameters & Path Loss ───────────────────────────────────────────────────
 NUM_BITS = 100_000
 SNR_DB   = np.arange(-5, 31, 1)
 SNR_LIN  = 10 ** (SNR_DB / 10.0)
 np.random.seed(42)
 
-# ── Path Loss Model ───────────────────────────────────────────────────────────
-# Relay is placed at 40% of the source-destination distance
-# Path loss: channel variance = 1 / d^alpha  (alpha=3, urban environment)
-ALPHA = 3
-D_SD  = 1.0               # normalized total distance
-D_SR  = 0.4               # source -> relay
-D_RD  = 0.6               # relay  -> destination
+ALPHA, D_SD, D_SR, D_RD = 3, 1.0, 0.4, 0.6
+VAR_SD, VAR_SR, VAR_RD  = 1/D_SD**ALPHA, 1/D_SR**ALPHA, 1/D_RD**ALPHA
+SNR_SD_EFF, SNR_SR_EFF, SNR_RD_EFF = VAR_SD*SNR_LIN, VAR_SR*SNR_LIN, VAR_RD*SNR_LIN
 
-VAR_SD = 1 / D_SD**ALPHA  # = 1.000
-VAR_SR = 1 / D_SR**ALPHA  # = 15.63  (shorter link → stronger)
-VAR_RD = 1 / D_RD**ALPHA  # =  4.63  (shorter link → stronger)
+# ── Helpers ──────────────────────────────────────────────────────────────────
+def ray(n, v=1.):  return np.sqrt(v/2)*(np.random.randn(n)+1j*np.random.randn(n))
+def wgn(n, s):     return np.sqrt(1/(2*s))*(np.random.randn(n)+1j*np.random.randn(n))
+def mod(b):        return (2*b-1).astype(complex)
+def dem(x):        return (np.real(x)>0).astype(int)
+def ber(a,b):      return np.mean(a!=b)
 
-# ── Channel & Modulation Helpers ─────────────────────────────────────────────
-def rayleigh(n, var=1.0): return np.sqrt(var/2) * (np.random.randn(n) + 1j * np.random.randn(n))
-def noise(n, snr):        return np.sqrt(1/(2*snr)) * (np.random.randn(n) + 1j * np.random.randn(n))
-def mod(bits):            return (2*bits - 1).astype(complex)   # BPSK: 0→-1, 1→+1
-def demod(sig):           return (np.real(sig) > 0).astype(int) # hard decision
-def ber(b1, b2):          return np.mean(b1 != b2)
+# ── Simulations ──────────────────────────────────────────────────────────────
+def direct(s):
+    bits=np.random.randint(0,2,NUM_BITS); h=ray(NUM_BITS,VAR_SD)
+    return ber(bits, dem(np.conj(h)*(h*mod(bits)+wgn(NUM_BITS,s))))
 
-# ── Simulation Functions ──────────────────────────────────────────────────────
-def direct(snr):
-    bits = np.random.randint(0, 2, NUM_BITS)
-    h    = rayleigh(NUM_BITS, VAR_SD)
-    rx   = h * mod(bits) + noise(NUM_BITS, snr)
-    return ber(bits, demod(np.conj(h) * rx))
+def af(s):
+    bits=np.random.randint(0,2,NUM_BITS); tx=mod(bits)
+    hsd,hsr,hrd = ray(NUM_BITS,VAR_SD),ray(NUM_BITS,VAR_SR),ray(NUM_BITS,VAR_RD)
+    ysd=hsd*tx+wgn(NUM_BITS,s); ysr=hsr*tx+wgn(NUM_BITS,s)
+    beta=1/np.sqrt(np.abs(hsr)**2+1/s)
+    yrd=hrd*(beta*ysr)+wgn(NUM_BITS,s)
+    nv_sd=1/s; nv_rd=(np.abs(hrd)**2*beta**2+1)/s
+    comb=np.conj(hsd)/nv_sd*ysd + np.conj(hrd*beta*hsr)/nv_rd*yrd
+    return ber(bits, dem(comb))
 
-def af(snr):
-    bits = np.random.randint(0, 2, NUM_BITS)
-    tx   = mod(bits)
-    h_sd = rayleigh(NUM_BITS, VAR_SD)
-    h_sr = rayleigh(NUM_BITS, VAR_SR)
-    h_rd = rayleigh(NUM_BITS, VAR_RD)
-
-    y_sd = h_sd * tx + noise(NUM_BITS, snr)
-    y_sr = h_sr * tx + noise(NUM_BITS, snr)
-
-    beta     = 1 / np.sqrt(np.abs(h_sr)**2 + 1/snr)        # amplification gain
-    y_rd     = h_rd * (beta * y_sr) + noise(NUM_BITS, snr)
-
-    combined = np.conj(h_sd) * y_sd + np.conj(h_rd * h_sr) * y_rd  # MRC
-    return ber(bits, demod(combined))
-
-def df(snr):
-    bits = np.random.randint(0, 2, NUM_BITS)
-    tx   = mod(bits)
-    h_sd = rayleigh(NUM_BITS, VAR_SD)
-    h_sr = rayleigh(NUM_BITS, VAR_SR)
-    h_rd = rayleigh(NUM_BITS, VAR_RD)
-
-    y_sd     = h_sd * tx + noise(NUM_BITS, snr)
-    y_sr     = h_sr * tx + noise(NUM_BITS, snr)
-    relay_tx = mod(demod(np.conj(h_sr) * y_sr))             # decode & re-encode
-    y_rd     = h_rd * relay_tx + noise(NUM_BITS, snr)
-
-    combined = np.conj(h_sd) * y_sd + np.conj(h_rd) * y_rd  # MRC
-    return ber(bits, demod(combined))
+def df(s):
+    bits=np.random.randint(0,2,NUM_BITS); tx=mod(bits)
+    hsd,hsr,hrd = ray(NUM_BITS,VAR_SD),ray(NUM_BITS,VAR_SR),ray(NUM_BITS,VAR_RD)
+    ysd=hsd*tx+wgn(NUM_BITS,s); ysr=hsr*tx+wgn(NUM_BITS,s)
+    yrd=hrd*mod(dem(np.conj(hsr)*ysr))+wgn(NUM_BITS,s)
+    return ber(bits, dem(np.conj(hsd)*ysd+np.conj(hrd)*yrd))
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 print("Simulating...")
-results = np.array([[direct(s), af(s), df(s)] for s in SNR_LIN])
-ber_direct, ber_af, ber_df = results[:,0], results[:,1], results[:,2]
-print("Done.")
+res = np.array([[direct(s),af(s),df(s)] for s in SNR_LIN])
+bd,ba,bdf = res[:,0],res[:,1],res[:,2]
+print("Done.\n")
 
-# ── Plot 1: BER vs SNR ────────────────────────────────────────────────────────
-plt.figure(figsize=(10, 6))
-plt.semilogy(SNR_DB, 0.5*erfc(np.sqrt(SNR_LIN)), 'k--', lw=1.5, label='Theoretical BPSK (AWGN)')
-plt.semilogy(SNR_DB, ber_direct, 'r-o', lw=2, ms=5, label='Direct Transmission')
-plt.semilogy(SNR_DB, ber_af,     'b-s', lw=2, ms=5, label='Amplify-and-Forward (AF)')
-plt.semilogy(SNR_DB, ber_df,     'g-^', lw=2, ms=5, label='Decode-and-Forward (DF)')
-plt.xlabel('SNR (dB)', fontsize=13)
-plt.ylabel('Bit Error Rate (BER)', fontsize=13)
-plt.title('BER vs SNR — Cooperative Communication Systems\n(BPSK, Rayleigh Fading + Path Loss, Single Relay)', fontsize=13)
-plt.legend(fontsize=11); plt.grid(True, which='both', alpha=0.4)
-plt.xlim([-5, 30]); plt.ylim([1e-5, 1])
-plt.tight_layout()
-plt.savefig('ber_vs_snr.png', dpi=150)
+# ── Diversity Order ───────────────────────────────────────────────────────────
+def div_order(b):
+    m=(SNR_DB>=15)&(b>1e-9); sl,_=np.polyfit(SNR_DB[m],np.log10(b[m]),1); return -sl*10
 
-# ── Plot 2: Shannon Capacity vs SNR ──────────────────────────────────────────
-cap_direct = np.log2(1 + SNR_LIN)
-cap_af     = 0.5 * np.log2(1 + SNR_LIN/2 + SNR_LIN**2 / (SNR_LIN + 1))
-cap_df     = 0.5 * np.log2(1 + 2*SNR_LIN)
+dd,da,ddf = div_order(bd),div_order(ba),div_order(bdf)
+print(f"Diversity Orders → Direct:{dd:.2f}(≈1)  AF:{da:.2f}(≈2)  DF:{ddf:.2f}(≈2)")
 
-plt.figure(figsize=(10, 6))
-plt.plot(SNR_DB, cap_direct, 'r-o', lw=2, ms=5, label='Direct Transmission')
-plt.plot(SNR_DB, cap_af,     'b-s', lw=2, ms=5, label='AF Cooperative')
-plt.plot(SNR_DB, cap_df,     'g-^', lw=2, ms=5, label='DF Cooperative (upper bound)')
-plt.xlabel('SNR (dB)', fontsize=13)
-plt.ylabel('Spectral Efficiency (bits/s/Hz)', fontsize=13)
-plt.title('Shannon Capacity vs SNR — Cooperative Communication Systems\n(Half-Duplex Relay, Single Relay Node)', fontsize=13)
-plt.legend(fontsize=11); plt.grid(True, which='both', alpha=0.4)
-plt.xlim([-5, 30]); plt.ylim([0, 12])
-plt.tight_layout()
-plt.savefig('capacity_vs_snr.png', dpi=150)
+# ── Plot 1: BER ───────────────────────────────────────────────────────────────
+plt.figure(figsize=(10,6))
+plt.semilogy(SNR_DB, .5*erfc(np.sqrt(SNR_LIN)), 'k--', lw=1.5, label='Theoretical BPSK (AWGN)')
+plt.semilogy(SNR_DB, bd,  'r-o', lw=2, ms=5, label=f'Direct (d≈{dd:.1f})')
+plt.semilogy(SNR_DB, ba,  'b-s', lw=2, ms=5, label=f'Amplify-and-Forward (d≈{da:.1f})')
+plt.semilogy(SNR_DB, bdf, 'g-^', lw=2, ms=5, label=f'Decode-and-Forward (d≈{ddf:.1f})')
+plt.xlabel('SNR (dB)',fontsize=13); plt.ylabel('BER',fontsize=13)
+plt.title(f'BER vs SNR — Cooperative Comm. (BPSK, Rayleigh+Path Loss α={ALPHA})',fontsize=13)
+plt.legend(fontsize=11); plt.grid(True,which='both',alpha=0.4)
+plt.xlim([-5,30]); plt.ylim([1e-5,1]); plt.tight_layout()
+plt.savefig('ber_vs_snr.png',dpi=150)
+
+# ── Plot 2: Capacity ──────────────────────────────────────────────────────────
+cap_d  = np.log2(1+SNR_SD_EFF)
+cap_af = .5*np.log2(1+(SNR_SR_EFF*SNR_RD_EFF)/(SNR_SR_EFF+SNR_RD_EFF+1))
+cap_df = .5*np.log2(1+np.minimum(SNR_SR_EFF,SNR_SD_EFF)+SNR_RD_EFF)
+
+plt.figure(figsize=(10,6))
+plt.plot(SNR_DB, cap_d,  'r-o', lw=2, ms=5, label='Direct')
+plt.plot(SNR_DB, cap_af, 'b-s', lw=2, ms=5, label='AF [Laneman 2004]')
+plt.plot(SNR_DB, cap_df, 'g-^', lw=2, ms=5, label='DF (upper bound)')
+plt.xlabel('SNR (dB)',fontsize=13); plt.ylabel('Spectral Efficiency (bits/s/Hz)',fontsize=13)
+plt.title(f'Shannon Capacity vs SNR — Half-Duplex Relay (α={ALPHA}, D_SR={D_SR}, D_RD={D_RD})',fontsize=13)
+plt.legend(fontsize=11); plt.grid(True,which='both',alpha=0.4)
+plt.xlim([-5,30]); plt.ylim([0,15]); plt.tight_layout()
+plt.savefig('capacity_vs_snr.png',dpi=150)
 
 plt.show()
 print("Graphs saved: ber_vs_snr.png | capacity_vs_snr.png")
