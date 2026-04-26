@@ -69,7 +69,7 @@ plt.savefig('ber_vs_snr.png',dpi=150)
 # ── Plot 2: Capacity ──────────────────────────────────────────────────────────
 cap_d  = np.log2(1+SNR_SD_EFF)
 cap_af = .5*np.log2(1+(SNR_SR_EFF*SNR_RD_EFF)/(SNR_SR_EFF+SNR_RD_EFF+1))
-cap_df = .5*np.log2(1+np.minimum(SNR_SR_EFF,SNR_SD_EFF)+SNR_RD_EFF)
+cap_df = .5*np.minimum(np.log2(1+SNR_SR_EFF), np.log2(1+SNR_SD_EFF+SNR_RD_EFF))
 
 plt.figure(figsize=(10,6))
 plt.plot(SNR_DB, cap_d,  'r-o', lw=2, ms=5, label='Direct')
